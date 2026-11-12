@@ -78,14 +78,45 @@ test("an empty <name/> deletes the tag", () => {
   assert.equal(children(ch, "http://www.google.com/schemas/play-podcasts/1.0", "description").length, 0);
 });
 
-test("channel_tags can't override the self-link or new-feed-url", () => {
+test("channel_tags can set itunes:new-feed-url", () => {
   const out = modifyFeed(
     SOURCE,
     URL_,
     `<itunes:new-feed-url>https://elsewhere.example/</itunes:new-feed-url>`,
   );
   const ch = channelOf(out);
-  assert.deepEqual(children(ch, ITUNES, "new-feed-url").map((e) => e.textContent), [URL_]);
+  assert.deepEqual(children(ch, ITUNES, "new-feed-url").map((e) => e.textContent), ["https://elsewhere.example/"]);
+});
+
+test("channel_tags can remove itunes:new-feed-url", () => {
+  const source = SOURCE.replace("</itunes:category>", "</itunes:category><itunes:new-feed-url>https://old.example/</itunes:new-feed-url>");
+  const out = modifyFeed(source, URL_, "<itunes:new-feed-url/>");
+  assert.equal(children(channelOf(out), ITUNES, "new-feed-url").length, 0);
+});
+
+test("a source new-feed-url is replaced by the default when channel_tags doesn't mention it", () => {
+  const source = SOURCE.replace("</itunes:category>", "</itunes:category><itunes:new-feed-url>https://old.example/</itunes:new-feed-url>");
+  const out = modifyFeed(source, URL_, "");
+  assert.deepEqual(children(channelOf(out), ITUNES, "new-feed-url").map((e) => e.textContent), [URL_]);
+});
+
+test("channel_tags can set the self-link", () => {
+  const out = modifyFeed(SOURCE, URL_, `<atom:link href="https://elsewhere.example/" rel="self"/>`);
+  const links = children(channelOf(out), ATOM, "link");
+  assert.deepEqual(links.map((l) => [l.getAttribute("rel"), l.getAttribute("href")]), [
+    ["self", "https://elsewhere.example/"],
+  ]);
+});
+
+test("channel_tags can remove atom:link entirely", () => {
+  const out = modifyFeed(SOURCE, URL_, "<atom:link/>");
+  assert.equal(children(channelOf(out), ATOM, "link").length, 0);
+});
+
+test("atom:link follows the replace-by-name rule like any other tag", () => {
+  const out = modifyFeed(SOURCE, URL_, `<atom:link href="https://hub.example/" rel="hub"/>`);
+  const links = children(channelOf(out), ATOM, "link");
+  assert.deepEqual(links.map((l) => l.getAttribute("rel")), ["hub"], "no self-link unless listed");
 });
 
 test("declares a namespace on <rss> when a new tag needs one", () => {

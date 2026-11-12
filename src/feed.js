@@ -101,6 +101,9 @@ function removeWithIndent(el) {
   el.parentNode.removeChild(el);
 }
 
+const isSelfLink = (el) =>
+  el.namespaceURI === ATOM && el.localName === "link" && el.getAttribute("rel") === "self";
+
 // An element written as <name/> with no attributes means "remove this tag".
 const isDeleteMarker = (el) => el.attributes.length === 0 && !el.firstChild;
 
@@ -108,7 +111,8 @@ const isDeleteMarker = (el) => el.attributes.length === 0 && !el.firstChild;
  * Apply the edits to an RSS feed.
  *
  * @param {string} xml          The source feed.
- * @param {string} feedUrl      This feed's own public URL (for the self-link and itunes:new-feed-url).
+ * @param {string} feedUrl      This feed's own public URL. Used for the self-link and
+ *                              itunes:new-feed-url, unless channelTags mentions those tags.
  * @param {string} channelTags  XML elements to insert into <channel>, replacing existing
  *                              tags of the same name. `<name/>` on its own removes the tag.
  * @returns {string}            The modified feed.
@@ -129,40 +133,43 @@ export function modifyFeed(xml, feedUrl, channelTags = "") {
   const tagsDoc = parse(`<channel-tags${decls}>${channelTags}</channel-tags>`, "channel_tags");
   const requested = elementChildren(tagsDoc.documentElement);
 
-  // Elements the code itself manages always go last and can't be overridden.
-  const managed = [
-    { ns: ITUNES, prefix: "itunes", name: "new-feed-url" },
-  ];
+  // Defaults, applied only for tag names that channel_tags doesn't mention:
+  //   atom:link             the rel="self" link points at this feed
+  //   itunes:new-feed-url   set to this feed's URL
+  const ATOM_LINK = `${ATOM}|link`;
+  const NEW_FEED_URL = `${ITUNES}|new-feed-url`;
+  const requestedKeys = new Set(requested.map(key));
+  const defaultSelfLink = !requestedKeys.has(ATOM_LINK);
+  const defaultNewFeedUrl = !requestedKeys.has(NEW_FEED_URL);
 
   // 1. Remove existing channel tags that are being replaced or deleted.
-  const replaceKeys = new Set(requested.map(key));
-  for (const m of managed) replaceKeys.add(`${m.ns}|${m.name}`);
+  const replaceKeys = new Set(requestedKeys);
+  if (defaultNewFeedUrl) replaceKeys.add(NEW_FEED_URL);
   for (const el of elementChildren(channel)) {
     if (replaceKeys.has(key(el))) removeWithIndent(el);
   }
 
-  // 2. Point the self-link at this feed.
-  let selfLink = elementChildren(channel).find(
-    (el) => el.namespaceURI === ATOM && el.localName === "link" && el.getAttribute("rel") === "self",
-  );
+  // 2. Build the list of elements to insert.
+  const toInsert = requested.filter((el) => !isDeleteMarker(el)).map((el) => doc.importNode(el, true));
 
-  // 3. Build the list of elements to insert.
-  const managedKeys = new Set(managed.map((m) => `${m.ns}|${m.name}`));
-  const toInsert = requested
-    .filter((el) => !isDeleteMarker(el) && !managedKeys.has(key(el)))
-    .map((el) => doc.importNode(el, true));
-  if (selfLink) {
-    selfLink.setAttribute("href", feedUrl);
-  } else {
-    selfLink = doc.createElementNS(ATOM, `${prefixFor(rss, ATOM, "atom")}:link`);
-    selfLink.setAttribute("href", feedUrl);
-    selfLink.setAttribute("rel", "self");
-    selfLink.setAttribute("type", "application/rss+xml");
-    toInsert.unshift(selfLink);
+  // 3. Apply the defaults.
+  if (defaultSelfLink) {
+    const selfLink = elementChildren(channel).find(isSelfLink);
+    if (selfLink) {
+      selfLink.setAttribute("href", feedUrl);
+    } else {
+      const link = doc.createElementNS(ATOM, `${prefixFor(rss, ATOM, "atom")}:link`);
+      link.setAttribute("href", feedUrl);
+      link.setAttribute("rel", "self");
+      link.setAttribute("type", "application/rss+xml");
+      toInsert.unshift(link);
+    }
   }
-  const newFeedUrl = doc.createElementNS(ITUNES, `${prefixFor(rss, ITUNES, "itunes")}:new-feed-url`);
-  newFeedUrl.appendChild(doc.createTextNode(feedUrl));
-  toInsert.push(newFeedUrl);
+  if (defaultNewFeedUrl) {
+    const newFeedUrl = doc.createElementNS(ITUNES, `${prefixFor(rss, ITUNES, "itunes")}:new-feed-url`);
+    newFeedUrl.appendChild(doc.createTextNode(feedUrl));
+    toInsert.push(newFeedUrl);
+  }
 
   // 4. Declare on <rss> any namespace the new elements need that the source doesn't.
   const addedNs = {};
