@@ -25,23 +25,108 @@ export class FeedError extends Error {}
 const ELEMENT_NODE = 1;
 const TEXT_NODE = 3;
 
+/**
+ * Apply channel_tags to an RSS feed.
+ *
+ * Each element in channelTags replaces every <channel> element with the same name,
+ * or is added if there is none. `<name/>` on its own removes that element.
+ *
+ * Defaults, used only for tag names channelTags doesn't mention:
+ *   <atom:link href="{feedUrl}" rel="self" type="application/rss+xml"/>
+ *   <itunes:new-feed-url>{feedUrl}</itunes:new-feed-url>
+ *
+ * @param {string} xml          The source feed.
+ * @param {string} feedUrl      This feed's own public URL.
+ * @param {string} channelTags  XML elements for <channel>.
+ * @returns {string}            The modified feed.
+ */
+export function modifyFeed(xml, feedUrl, channelTags = "") {
+  const parts = splitFeed(xml);
+  const header = xml.slice(parts.headerStart, parts.headerEnd);
+
+  // Parse the header inside its original <rss> and <channel> tags, so prefixes resolve.
+  const doc = parse(`${parts.rssTag}${parts.channelTag}${header}</channel></rss>`, "source feed");
+  const rss = doc.documentElement;
+  const channel = elementChildren(rss)[0];
+  const sourceNs = declaredNamespaces(rss);
+
+  // Parse channel_tags, then add the defaults for any names it doesn't mention.
+  let tags = parseTags(channelTags, sourceNs);
+  const mentioned = new Set(tags.map(key));
+  const url = escapeXml(feedUrl);
+  const defaults = [];
+  if (!mentioned.has(`${ATOM}|link`)) {
+    defaults.push(`<atom:link href="${url}" rel="self" type="application/rss+xml"/>`);
+  }
+  if (!mentioned.has(`${ITUNES}|new-feed-url`)) {
+    defaults.push(`<itunes:new-feed-url>${url}</itunes:new-feed-url>`);
+  }
+  tags = [...tags, ...parseTags(defaults.join(""), sourceNs)];
+
+  // Remove every existing channel element whose name is in the tags.
+  const names = new Set(tags.map(key));
+  for (const el of elementChildren(channel)) {
+    if (names.has(key(el))) removeWithIndent(el);
+  }
+
+  // Insert the tags (except `<name/>` removals) before the first item,
+  // matching the header's indentation.
+  const toInsert = tags.filter((el) => !isRemoval(el)).map((el) => doc.importNode(el, true));
+  const last = channel.lastChild;
+  const trailing = last && last.nodeType === TEXT_NODE && !last.data.trim() ? last : null;
+  const indent = indentOf(channel);
+  for (const el of toInsert) {
+    channel.insertBefore(doc.createTextNode(indent), trailing);
+    channel.insertBefore(el, trailing);
+  }
+  if (!trailing) channel.appendChild(doc.createTextNode(indent));
+
+  // Declare on <rss> any namespace the new elements need that the source doesn't.
+  const addedNs = {};
+  for (const el of toInsert) {
+    for (const [prefix, uri] of Object.entries(usedNamespaces(el))) {
+      if (sourceNs[prefix] !== uri) addedNs[prefix] = uri;
+    }
+  }
+  for (const [prefix, uri] of Object.entries(addedNs)) {
+    rss.setAttributeNS(XMLNS, `xmlns:${prefix}`, uri);
+  }
+
+  // Serialise the header and splice it back into the original text.
+  const serialized = new XMLSerializer().serializeToString(doc);
+  const openEnd = serialized.indexOf(">", serialized.indexOf("<channel")) + 1;
+  const newHeader = serialized.slice(openEnd, serialized.lastIndexOf("</channel>"));
+  const extraDecls = Object.entries(addedNs)
+    .map(([p, uri]) => ` xmlns:${p}="${uri}"`)
+    .join("");
+  const newRssTag = parts.rssTag.replace(/\s*(\/?)>$/, `${extraDecls}$1>`);
+
+  return (
+    xml.slice(0, parts.rssStart) +
+    newRssTag +
+    xml.slice(parts.rssStart + parts.rssTag.length, parts.headerStart) +
+    newHeader +
+    xml.slice(parts.headerEnd)
+  );
+}
+
+// Parse a string of sibling XML elements, resolving prefixes against the source
+// feed's namespaces and the known ones. Returns the top-level elements.
+function parseTags(text, sourceNs) {
+  const namespaces = { ...KNOWN_NAMESPACES, ...sourceNs };
+  const decls = Object.entries(namespaces)
+    .map(([p, uri]) => ` xmlns:${p}="${uri}"`)
+    .join("");
+  const doc = parse(`<channel-tags${decls}>${text}</channel-tags>`, "channel_tags");
+  return elementChildren(doc.documentElement);
+}
+
 function parse(xml, what) {
   try {
     return new DOMParser({ onError: onErrorStopParsing }).parseFromString(xml, "text/xml");
   } catch (e) {
     throw new FeedError(`Could not parse ${what}: ${e.message}`);
   }
-}
-
-// Find the first match of `pattern` that is not inside a comment or CDATA section.
-function findOutsideMarkup(xml, pattern, from = 0) {
-  const re = new RegExp(`<!--[\\s\\S]*?-->|<!\\[CDATA\\[[\\s\\S]*?\\]\\]>|${pattern}`, "g");
-  re.lastIndex = from;
-  let m;
-  while ((m = re.exec(xml))) {
-    if (!m[0].startsWith("<!--") && !m[0].startsWith("<![CDATA[")) return m;
-  }
-  return null;
 }
 
 // Split the source feed into: [before header] [header] [items and the rest].
@@ -60,6 +145,17 @@ function splitFeed(xml) {
     headerStart,
     headerEnd: end.index,
   };
+}
+
+// Find the first match of `pattern` that is not inside a comment or CDATA section.
+function findOutsideMarkup(xml, pattern, from = 0) {
+  const re = new RegExp(`<!--[\\s\\S]*?-->|<!\\[CDATA\\[[\\s\\S]*?\\]\\]>|${pattern}`, "g");
+  re.lastIndex = from;
+  let m;
+  while ((m = re.exec(xml))) {
+    if (!m[0].startsWith("<!--") && !m[0].startsWith("<![CDATA[")) return m;
+  }
+  return null;
 }
 
 // Namespace declarations (prefix -> URI) on an element.
@@ -88,10 +184,20 @@ function usedNamespaces(node, out = {}) {
 
 const key = (el) => `${el.namespaceURI ?? ""}|${el.localName}`;
 
+// An element written as <name/> with no attributes means "remove this tag".
+const isRemoval = (el) => el.attributes.length === 0 && !el.firstChild;
+
 function elementChildren(node) {
   const out = [];
   for (let c = node.firstChild; c; c = c.nextSibling) if (c.nodeType === ELEMENT_NODE) out.push(c);
   return out;
+}
+
+// The whitespace before the first element in <channel>, e.g. "\n        ".
+function indentOf(channel) {
+  const first = elementChildren(channel)[0];
+  const ws = first?.previousSibling;
+  return ws && ws.nodeType === TEXT_NODE && !ws.data.trim() ? ws.data : "\n";
 }
 
 // Remove an element plus the whitespace (indentation) just before it.
@@ -101,125 +207,6 @@ function removeWithIndent(el) {
   el.parentNode.removeChild(el);
 }
 
-const isSelfLink = (el) =>
-  el.namespaceURI === ATOM && el.localName === "link" && el.getAttribute("rel") === "self";
-
-// An element written as <name/> with no attributes means "remove this tag".
-const isDeleteMarker = (el) => el.attributes.length === 0 && !el.firstChild;
-
-/**
- * Apply the edits to an RSS feed.
- *
- * @param {string} xml          The source feed.
- * @param {string} feedUrl      This feed's own public URL. Used for the self-link and
- *                              itunes:new-feed-url, unless channelTags mentions those tags.
- * @param {string} channelTags  XML elements to insert into <channel>, replacing existing
- *                              tags of the same name. `<name/>` on its own removes the tag.
- * @returns {string}            The modified feed.
- */
-export function modifyFeed(xml, feedUrl, channelTags = "") {
-  const parts = splitFeed(xml);
-  const header = xml.slice(parts.headerStart, parts.headerEnd);
-
-  // Parse the header inside its original <rss> and <channel> tags, so prefixes resolve.
-  const doc = parse(`${parts.rssTag}${parts.channelTag}${header}</channel></rss>`, "source feed");
-  const rss = doc.documentElement;
-  const channel = elementChildren(rss)[0];
-  const sourceNs = declaredNamespaces(rss);
-
-  // Parse channel_tags, declaring the feed's namespaces plus the known ones.
-  const wrapperNs = { ...KNOWN_NAMESPACES, ...sourceNs };
-  const decls = Object.entries(wrapperNs).map(([p, uri]) => ` xmlns:${p}="${uri}"`).join("");
-  const tagsDoc = parse(`<channel-tags${decls}>${channelTags}</channel-tags>`, "channel_tags");
-  const requested = elementChildren(tagsDoc.documentElement);
-
-  // Defaults, applied only for tag names that channel_tags doesn't mention:
-  //   atom:link             the rel="self" link points at this feed
-  //   itunes:new-feed-url   set to this feed's URL
-  const ATOM_LINK = `${ATOM}|link`;
-  const NEW_FEED_URL = `${ITUNES}|new-feed-url`;
-  const requestedKeys = new Set(requested.map(key));
-  const defaultSelfLink = !requestedKeys.has(ATOM_LINK);
-  const defaultNewFeedUrl = !requestedKeys.has(NEW_FEED_URL);
-
-  // 1. Remove existing channel tags that are being replaced or deleted.
-  const replaceKeys = new Set(requestedKeys);
-  if (defaultNewFeedUrl) replaceKeys.add(NEW_FEED_URL);
-  for (const el of elementChildren(channel)) {
-    if (replaceKeys.has(key(el))) removeWithIndent(el);
-  }
-
-  // 2. Build the list of elements to insert.
-  const toInsert = requested.filter((el) => !isDeleteMarker(el)).map((el) => doc.importNode(el, true));
-
-  // 3. Apply the defaults.
-  if (defaultSelfLink) {
-    const selfLink = elementChildren(channel).find(isSelfLink);
-    if (selfLink) {
-      selfLink.setAttribute("href", feedUrl);
-    } else {
-      const link = doc.createElementNS(ATOM, `${prefixFor(rss, ATOM, "atom")}:link`);
-      link.setAttribute("href", feedUrl);
-      link.setAttribute("rel", "self");
-      link.setAttribute("type", "application/rss+xml");
-      toInsert.unshift(link);
-    }
-  }
-  if (defaultNewFeedUrl) {
-    const newFeedUrl = doc.createElementNS(ITUNES, `${prefixFor(rss, ITUNES, "itunes")}:new-feed-url`);
-    newFeedUrl.appendChild(doc.createTextNode(feedUrl));
-    toInsert.push(newFeedUrl);
-  }
-
-  // 4. Declare on <rss> any namespace the new elements need that the source doesn't.
-  const addedNs = {};
-  for (const el of toInsert) {
-    for (const [prefix, uri] of Object.entries(usedNamespaces(el))) {
-      if (sourceNs[prefix] === uri) continue;
-      if (sourceNs[prefix] && sourceNs[prefix] !== uri) {
-        throw new FeedError(`Prefix "${prefix}:" means something else in the source feed`);
-      }
-      addedNs[prefix] = uri;
-    }
-  }
-  for (const [prefix, uri] of Object.entries(addedNs)) {
-    rss.setAttributeNS(XMLNS, `xmlns:${prefix}`, uri);
-  }
-
-  // 5. Insert before the trailing whitespace, matching the header's indentation.
-  const last = channel.lastChild;
-  const trailing = last && last.nodeType === TEXT_NODE && !last.data.trim() ? last : null;
-  const firstEl = elementChildren(channel)[0];
-  const indentNode = firstEl?.previousSibling;
-  const indent =
-    indentNode && indentNode.nodeType === TEXT_NODE && !indentNode.data.trim() ? indentNode.data : "\n";
-  for (const el of toInsert) {
-    channel.insertBefore(doc.createTextNode(indent), trailing);
-    channel.insertBefore(el, trailing);
-  }
-  if (!trailing) channel.appendChild(doc.createTextNode(indent));
-
-  // 6. Serialise the header and splice it back into the original text.
-  const serialized = new XMLSerializer().serializeToString(doc);
-  const openEnd = serialized.indexOf(">", serialized.indexOf("<channel")) + 1;
-  const newHeader = serialized.slice(openEnd, serialized.lastIndexOf("</channel>"));
-
-  const extraDecls = Object.entries(addedNs)
-    .map(([p, uri]) => ` xmlns:${p}="${uri}"`)
-    .join("");
-  const newRssTag = parts.rssTag.replace(/\s*(\/?)>$/, `${extraDecls}$1>`);
-
-  return (
-    xml.slice(0, parts.rssStart) +
-    newRssTag +
-    xml.slice(parts.rssStart + parts.rssTag.length, parts.headerStart) +
-    newHeader +
-    xml.slice(parts.headerEnd)
-  );
-}
-
-// The prefix the feed already uses for a namespace, or a default one.
-function prefixFor(rss, uri, fallback) {
-  const found = Object.entries(declaredNamespaces(rss)).find(([, u]) => u === uri);
-  return found ? found[0] : fallback;
+function escapeXml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 }

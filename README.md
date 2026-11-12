@@ -39,17 +39,19 @@ Example:
 
 ### Defaults
 
-Two tags get defaults based on the feed's own URL, which is worked out from
-the request, e.g. `https://rss.stjohnsanglican.org.au/sermons`:
+If `channel_tags` doesn't mention `atom:link` or `itunes:new-feed-url`, these
+defaults are added to it, using the feed's own URL worked out from the
+request (e.g. `https://rss.stjohnsanglican.org.au/sermons`):
 
-- `<atom:link rel="self">` is set to point at the feed.
-- `<itunes:new-feed-url>` is set to the feed's URL.
+```xml
+<atom:link href="{feed URL}" rel="self" type="application/rss+xml"/>
+<itunes:new-feed-url>{feed URL}</itunes:new-feed-url>
+```
 
-A default only applies if `channel_tags` doesn't mention that tag name. If
-it does, the normal rule applies: the tags you list replace all existing
-ones with that name. For example, listing an `<atom:link rel="hub" …/>`
-replaces every `atom:link`, so include the self-link too if you want one.
-`<itunes:new-feed-url/>` removes that tag.
+They then follow the same rule as any other tag. To override one, list that
+tag yourself. For example, listing an `<atom:link rel="hub" …/>` replaces the
+default and every existing `atom:link`, so include the self-link too if you
+want one. `<itunes:new-feed-url/>` removes that tag.
 
 If the source feed or `channel_tags` can't be parsed, the URL returns a 500
 error with a message explaining why.
