@@ -8,7 +8,7 @@ result is served on your own domain, for example
 ## Configuring feeds
 
 Feeds are defined in the Workers KV namespace bound as `CONFIG`
-(dashboard: **Storage & Databases → Workers KV → SERMONS_CONFIG → KV Pairs**).
+(dashboard: **Storage & Databases → Workers KV → MODIFY_RSS_FEED_CONFIG → KV Pairs**).
 Changes take effect within about a minute, with no redeploy.
 
 | Key | Required | Meaning |
