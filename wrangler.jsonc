@@ -1,0 +1,9 @@
+{
+  "name": "sermons-feed",
+  "pages_build_output_dir": "./public",
+  "compatibility_date": "2026-11-01",
+  "kv_namespaces": [
+    // Feed settings: <feed>:source_url and <feed>:channel_tags
+    { "binding": "CONFIG", "id": "ba4417223dcb4bae80f408e1ec9d5b26" }
+  ]
+}

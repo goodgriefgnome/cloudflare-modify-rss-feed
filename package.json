@@ -1,0 +1,11 @@
+{
+  "name": "cloudflare-modify-rss-feed",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.12"
+  }
+}
