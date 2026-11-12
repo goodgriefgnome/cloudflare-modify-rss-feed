@@ -56,10 +56,17 @@ error with a message explaining why.
 
 ## Deployment
 
-The Cloudflare Pages project is connected to this repository. Every push to
-`main` deploys automatically. Cloudflare installs the dependencies and
-bundles the function. KV settings and the custom domain are not affected by
-deploys.
+The Cloudflare Pages project `modify-rss-feed` is connected to this
+repository. Every push to `main` deploys automatically. Cloudflare installs
+the dependencies, runs the build command, and bundles the function. KV
+settings and the custom domain are not affected by deploys.
+
+Project build settings (dashboard: **Settings → Build**):
+
+- **Build command:** `npm test`. If the tests fail, the deploy is aborted.
+  Some build command must be set: with none, Cloudflare skips installing
+  dependencies and the function can't find `@xmldom/xmldom`.
+- **Build output directory:** `public` (also set in `wrangler.jsonc`).
 
 `wrangler.jsonc` holds the project name and the KV binding.
 
